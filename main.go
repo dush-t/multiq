@@ -7,11 +7,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
-	"time"
-
-	"github.com/gorilla/websocket"
 )
-
 
 type reqPayloadStruct struct {
 	EndpointID string `json:"EndpointId"`
@@ -26,8 +22,6 @@ func main() {
 
 	http.HandleFunc("/addEndpoint", addEndpointRoute)
 	http.HandleFunc("/pushToEndpoint", pushToEndpoint)
-
-	go handleMessages()
 
 	log.Println("http server started on :8000")
 	err := http.ListenAndServe(":8000", nil)

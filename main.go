@@ -12,21 +12,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-var clients = make(map[*websocket.Conn]bool) // connected clients
-var broadcast = make(chan Message)           // broadcast channel
-
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
-}
-
-// Define our message object
-type Message struct {
-	Email    string `json:"email"`
-	Username string `json:"username"`
-	Message  string `json:"message"`
-}
 
 type reqPayloadStruct struct {
 	EndpointID string `json:"EndpointId"`
@@ -39,7 +24,6 @@ func main() {
 	fs := http.FileServer(http.Dir("../public"))
 	http.Handle("/", fs)
 
-	http.HandleFunc("/ws", handleConnections)
 	http.HandleFunc("/addEndpoint", addEndpointRoute)
 	http.HandleFunc("/pushToEndpoint", pushToEndpoint)
 
@@ -106,45 +90,4 @@ func addEndpointRoute(w http.ResponseWriter, r *http.Request) {
 	log.Println(de)
 	eb.AddEndpoint(de)
 	go de.Start()
-}
-
-func handleConnections(w http.ResponseWriter, r *http.Request) {
-	ws, err := upgrader.Upgrade(w, r, nil)
-
-	// log.Println(*ws)
-
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer ws.Close()
-
-	clients[ws] = true
-	log.Println(clients)
-
-	for {
-		var msg Message
-		err := ws.ReadJSON(&msg)
-		if err != nil {
-			log.Printf("error: %v", err)
-			delete(clients, ws)
-			break
-		}
-
-		broadcast <- msg
-	}
-}
-
-func handleMessages() {
-	time.Sleep(20 * time.Second)
-	for {
-		msg := <-broadcast
-		for client := range clients {
-			err := client.WriteJSON(msg)
-			if err != nil {
-				log.Printf("error: %v", err)
-				client.Close()
-				delete(clients, client)
-			}
-		}
-	}
 }

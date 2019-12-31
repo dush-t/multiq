@@ -20,8 +20,8 @@ func main() {
 	fs := http.FileServer(http.Dir("../public"))
 	http.Handle("/", fs)
 
-	http.HandleFunc("/addEndpoint", addEndpointRoute)
-	http.HandleFunc("/pushToEndpoint", pushToEndpoint)
+	http.HandleFunc("/addEndpoint", addEndpointRoute)  // Register an endpoint with the multiq server
+	http.HandleFunc("/pushToEndpoint", pushToEndpoint) // Push data to a given DataEndpoint
 
 	log.Println("http server started on :8000")
 	err := http.ListenAndServe(":8000", nil)
@@ -31,10 +31,15 @@ func main() {
 
 }
 
+/*
+	Takes the http request and adds it to the queue of
+	the desired endpoint while keeping the connection
+	open till the response is recieved from that endpoint.
+*/
 func pushToEndpoint(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(r.Body)
-	log.Println("Pushing to endpoint")
 
+	// Read request body to get EndpointID
 	var reqPayload reqPayloadStruct
 	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
@@ -48,10 +53,17 @@ func pushToEndpoint(w http.ResponseWriter, r *http.Request) {
 	if decodeErr != nil {
 		panic(err)
 	}
-
 	endpointID := reqPayload.EndpointID
+
+	/*
+		The server will close the connection and return whatever response has been written
+		by the ResponseWriter when this function completes execution. So we make a new channel
+		c to pass to the EventBus. When the request has been successfully forwarded and a
+		response is recieved, the EventBus will send a true value on this channel and only
+		then will the function terminate.
+	*/
 	var c = make(CompleteChan)
-	var httpData = HttpRequestData{res: &w, req: r, completeChan: &c}
+	var httpData = HTTPRequestData{res: &w, req: r, completeChan: &c}
 
 	eb.Publish(endpointID, &httpData)
 
@@ -66,6 +78,11 @@ func pushToEndpoint(w http.ResponseWriter, r *http.Request) {
 
 }
 
+/*
+	Parse http request to get Endpoint details, register an DataEndpoint with
+	those details and spawn a goroutine that listens for requests at this
+	DataEndpoint.
+*/
 func addEndpointRoute(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(r.Body)
 	var body struct {
@@ -81,7 +98,6 @@ func addEndpointRoute(w http.ResponseWriter, r *http.Request) {
 
 	var dataChan = make(DataChannel)
 	de := DataEndpoint{id: body.ID, dataChannel: &dataChan, endpoint: body.Endpoint, active: false}
-	log.Println(de)
 	eb.AddEndpoint(de)
 	go de.Start()
 }

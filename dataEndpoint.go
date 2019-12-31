@@ -6,46 +6,32 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 )
 
-type HttpRequestData struct {
-	res          *http.ResponseWriter
-	req          *http.Request
-	completeChan *CompleteChan
+// HTTPRequestData stores the data required to push a request to a particular DataEndpoint
+// and to return the response of the pushed request back to the client.
+type HTTPRequestData struct {
+	res          *http.ResponseWriter // Pointer to original ResponseWriter opened in the handler function.
+	req          *http.Request        // Pointer to the request that is to be forwarded to the given endpoint
+	completeChan *CompleteChan        // Channel on which the EventBus notifies handler function to return response.
 }
 
-// DataChannel channel to send pub/sub messages
-type DataChannel chan *HttpRequestData
+// DataChannel is the actual 'queue' of web requests. The goroutine spawned by the DataEndpoint
+// Start function will be listening on this channel and will forward requests to the corresponding
+// url in the DataEndpoint.
+type DataChannel chan *HTTPRequestData
 
-// DataEndpoint to forward data to server from the channel
+// DataEndpoint is like an address. It contains information of where to send information
+// for a single endpoint.
 type DataEndpoint struct {
-	id          string
-	dataChannel *DataChannel
-	endpoint    string
-	active      bool
+	id          string       // Client will use this id to specify on which queue to add requests
+	dataChannel *DataChannel // The actual 'queue'
+	endpoint    string       // The actual url where the request is to be sent
+	active      bool         // True if the DataEndpoint is in the process of forwarding a request
 }
 
-// Push data to the endpoint and lock till it gets a response.
-func (d *DataEndpoint) Push(res *http.ResponseWriter, req *http.Request) {
-	d.active = true
-
-	url, _ := url.Parse(d.endpoint)
-	proxy := httputil.NewSingleHostReverseProxy(url)
-	req.URL.Host = url.Host
-	log.Println(req.URL.Host)
-	req.URL.Scheme = url.Scheme
-	req.Header.Set("X-Forwarded-Host", req.Header.Get("Host"))
-	req.Host = url.Host
-	log.Printf("Sending request to %v \n", url)
-	proxy.ServeHTTP(*res, req)
-
-	d.active = false
-}
-
-// PushTo specific endpoint
-func (d *DataEndpoint) PushTo(h *HttpRequestData) {
+// PushTo is the function that will actually forward a request to a url.
+func (d *DataEndpoint) PushTo(h *HTTPRequestData) {
 	res := h.res
 	req := h.req
 	compChan := *h.completeChan
@@ -56,10 +42,10 @@ func (d *DataEndpoint) PushTo(h *HttpRequestData) {
 		return
 	}
 
+	// Create and configure new request for https.
 	req.Body = ioutil.NopCloser(bytes.NewReader(body))
 	url := d.endpoint
 	proxyReq, err := http.NewRequest(req.Method, url, bytes.NewReader(body))
-
 	proxyReq.Header = req.Header
 	proxyReq.Header.Set("X-Forwarded-Host", req.Header.Get("Host"))
 
@@ -71,15 +57,22 @@ func (d *DataEndpoint) PushTo(h *HttpRequestData) {
 	}
 	defer resp.Body.Close()
 
+	// Write the response recieved from the forwarded request into the original
+	// response that the http handler func was supposed to return using the original
+	// ResponseWriter.
 	for h, val := range resp.Header {
 		(*res).Header().Set(h, val[0])
 	}
 	io.Copy(*res, resp.Body)
+
+	// Notify the http handler function to return the response to the client.
 	compChan <- true
 
 }
 
-// Start the dataendpoint
+// Start spawns a goroutine that listens to the dataChannel of a
+// DataEndpoint. When the channel recieves a *HTTPRequestData, it
+// passes the data to the PushTo function.
 func (d *DataEndpoint) Start() {
 	dataChan := *(d.dataChannel)
 	log.Println(d)

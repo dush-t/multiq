@@ -3,9 +3,12 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"flag"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 )
 
@@ -20,6 +23,26 @@ func main() {
 	fs := http.FileServer(http.Dir("../public"))
 	http.Handle("/", fs)
 
+	var mode string
+	flag.StringVar(&mode, "mode", "queue", "The mode in which multiq runs - queue or rev_proxy")
+	flag.Parse()
+
+	if mode == "rev_proxy" {
+		fmt.Println("Running in reverse proxy mode")
+		var routesFilePath string
+		flag.StringVar(&routesFilePath, "route-conf", "none", "The config file containing regular expressions of all the routes to queue")
+		if routesFilePath == "none" {
+			log.Fatal("No route config file specified. Please specify it using the route-conf flag")
+			os.Exit(1)
+		}
+		routeRegexList := ReadURLConf(routesFilePath)
+		dyHandler := &DynamicHandler{}
+
+		for _, regexp := range routeRegexList {
+			dyHandler.HandleFunc(regexp, logRequestData)
+		}
+	}
+
 	http.HandleFunc("/addEndpoint", addEndpointRoute)  // Register an endpoint with the multiq server
 	http.HandleFunc("/pushToEndpoint", pushToEndpoint) // Push data to a given DataEndpoint
 
@@ -29,6 +52,10 @@ func main() {
 		log.Fatal("ListenAndServe: ", err)
 	}
 
+}
+
+func logRequestData(w http.ResponseWriter, r *http.Request) {
+	log.Println("Recieved request on", r.URL.Path)
 }
 
 /*

@@ -14,20 +14,19 @@ type route struct {
 	handler http.Handler
 }
 
+type routeQueueData struct {
+	open                 bool
+	queue                *DataChannel
+	lastRequestTimestamp time.Time
+}
+
+type routeMap map[string]*routeQueueData
+
 // DynamicHandler is a custom handler in which one can
 // use regex in place of hardcoded urls.
 type DynamicHandler struct {
 	routes []*route
 }
-
-type routeQueueData struct {
-	open                 bool
-	lastRequestTimestamp time.Time
-	queue                *DataChannel
-	completeChan         *CompleteChan
-}
-
-type routeMap map[string]*routeQueueData
 
 // RouteMap stores information about which queues on routes
 var RouteMap = make(routeMap)
@@ -39,53 +38,78 @@ func (d *DynamicHandler) Handler(pattern *regexp.Regexp, handler http.Handler) {
 
 // HandleFunc to implement the http.Handler interface
 func (d *DynamicHandler) HandleFunc(pattern *regexp.Regexp, handler func(http.ResponseWriter, *http.Request)) {
-	// queue := make(DataChannel)
-	// completeChan := make(CompleteChan)
-	// data := routeQueueData{open: true, lastRequestTimestamp: time.Now(), queue: &queue, completeChan: &completeChan}
-	// RouteMap[pattern] = &data
-
 	d.routes = append(d.routes, &route{pattern, http.HandlerFunc(handler)})
 }
 
 // ServeHTTP to implement the http.Handler interface
 func (d *DynamicHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	for _, route := range d.routes {
-		if route.pattern.MatchString(r.URL.Path) {
-			_, exists := RouteMap[r.URL.Path]
-			if !exists {
+	rqData, toBeQueued := d.findQueue(r.URL.Path)
+
+	c := make(CompleteChan)
+	h := HTTPRequestData{
+		res:          &w,
+		req:          r,
+		completeChan: &c,
+	}
+
+	if !toBeQueued {
+		log.Println("Recieved request to unlisted path '" + r.URL.Path + "', forwarding without queueing.")
+		forwardRequest(&h)
+	} else {
+		rqData.pushRequestToQueue(&h)
+	}
+
+}
+
+// findQueue will see if the urlPath is supposed to be queued. If it is not, it will
+// simply return nil and false. If it is, then if it's queue is not created, it will
+// create and save the queue data. If the queue is already created, it will simply
+// return a pointer to the queue data and true.
+func (d *DynamicHandler) findQueue(urlPath string) (*routeQueueData, bool) {
+	r, exists := RouteMap[urlPath]
+	if !exists {
+		for _, route := range d.routes {
+			if route.pattern.MatchString(urlPath) {
 				queue := make(DataChannel)
-				completeChan := make(CompleteChan)
-				data := routeQueueData{open: true, lastRequestTimestamp: time.Now(), queue: &queue, completeChan: &completeChan}
-				RouteMap[r.URL.Path] = &data
-				go queueListener(&data)
-			}
+				rqData := routeQueueData{
+					open:                 true,
+					lastRequestTimestamp: time.Now(),
+					queue:                &queue,
+				}
+				RouteMap[urlPath] = &rqData
+				exists = true
 
-			data := RouteMap[r.URL.Path]
-			requestData := HTTPRequestData{res: &w, req: r, completeChan: data.completeChan}
-			queue := *(data.queue)
-			queue <- &requestData
-
-			completed := <-*(data.completeChan)
-			if completed == true {
-				return
+				go queueListener(&rqData) // Start the listener on this queue
+				return &rqData, true
 			}
 		}
+		return nil, false
 	}
-	// simply forward the request without queueing if the URL is not specified in the config file.
-	log.Println("Recieved request to unlisted path '" + r.URL.Path + "', forwarding without queueing.")
-	forwardRequest(&w, r, nil)
+	return r, exists
+}
+
+func (r *routeQueueData) pushRequestToQueue(h *HTTPRequestData) {
+	queue := *(r.queue)
+	queue <- h
+	completed := <-*(h.completeChan)
+	if completed == true {
+		return
+	}
 }
 
 func queueListener(r *routeQueueData) {
 	q := r.queue
-	c := r.completeChan
 	for {
 		reqData := <-*(q)
-		forwardRequest((*reqData).res, (*reqData).req, c)
+		forwardRequest(reqData)
 	}
 }
 
-func forwardRequest(res *http.ResponseWriter, req *http.Request, c *CompleteChan) {
+func forwardRequest(h *HTTPRequestData) {
+	res := h.res
+	req := h.req
+	c := h.completeChan
+
 	url, _ := url.Parse(req.URL.Path)
 	proxy := httputil.NewSingleHostReverseProxy(url)
 	req.URL.Host = url.Host
